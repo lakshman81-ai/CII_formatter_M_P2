@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAESAR II Neutral File Tools</title>
+    <!-- TailWind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PyScript -->
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+</head>
+<body class="bg-gray-100 font-sans text-gray-800">
+
+    <div class="max-w-4xl mx-auto mt-10 p-6 bg-white rounded-lg shadow-md">
+        <h1 class="text-3xl font-bold mb-6 text-center text-blue-600">CAESAR II Neutral File Editor</h1>
+
+        <div id="loading" class="text-center p-4 text-blue-500 font-semibold">
+            Loading Python Environment... Please wait.
+        </div>
+
+        <div id="app" class="hidden">
+            <!-- Parsing & Exporting Section -->
+            <div class="border border-gray-300 rounded p-4 mb-6 bg-gray-50">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2">1. Convert .CII to CSV</h2>
+                <div class="flex flex-col gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Select Original .CII File</label>
+                        <input type="file" id="upload-cii" accept=".cii" class="block w-full border border-gray-300 p-2 rounded">
+                    </div>
+                    <div>
+                        <button id="btn-export-csv" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50">
+                            Parse & Download CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Reconstructing Section -->
+            <div class="border border-gray-300 rounded p-4 bg-gray-50">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2">2. Reconstruct .CII from CSV</h2>
+                <p class="text-sm text-gray-600 mb-4">Requires both the original .CII (for headers/metadata) and the modified CSV.</p>
+                <div class="flex flex-col gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Select Modified CSV</label>
+                        <input type="file" id="upload-csv" accept=".csv" class="block w-full border border-gray-300 p-2 rounded">
+                    </div>
+                    <div>
+                        <button id="btn-reconstruct" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
+                            Reconstruct & Download .CII
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-6 text-sm text-gray-500 flex flex-col h-64" id="logs-container">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="font-bold">Operation Logs:</h3>
+                    <button id="btn-clear-logs" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-700 px-2 py-1 rounded border border-gray-300">Clear Logs</button>
+                </div>
+                <div id="status-logs" class="bg-[#f5f5f5] text-gray-800 p-2 rounded border border-gray-300 flex-1 overflow-y-auto font-mono text-xs whitespace-pre-wrap divide-y divide-gray-200 shadow-inner">
+                    <!-- Logs will be injected here as individual div lines -->
+                </div>
+            </div>
+
+            <div class="mt-4 text-xs text-gray-400 text-right">
+                ver.14-03-26 time 12.00
+            </div>
+        </div>
+    </div>
+
+    <!-- PyScript Config -->
+    <py-config>
+        packages = ["pandas", "pydantic"]
+
+        [[fetch]]
+        files = [
+            "./parser.py",
+            "./serializer.py",
+            "./exporter.py",
+            "./importer.py",
+            "./logger.py",
+            "./comparator.py",
+            "./optimizer.py",
+            "./optimizer_settings.py"
+        ]
+    </py-config>
+
+    <!-- PyScript Logic -->
+    <script type="py">
+import asyncio
+from js import document, Blob, window, Uint8Array, URL
+from pyodide.ffi import create_proxy
+
+# Import our custom modules
+from parser import CIIParser, ParserSettings
+from serializer import CIISerializer, SerializerSettings
+from exporter import generate_custom_csv
+from importer import reconstruct_from_csv
+
+def log_status(msg):
+    log_el = document.getElementById("status-logs")
+
+    # Create a new div for each log line to allow for styling (like borders between logs)
+    line_div = document.createElement("div")
+    line_div.className = "py-1 px-2 hover:bg-gray-100"
+
+    # If the message contains [ERROR], make it red. If [INFO], make it normal.
+    if "[ERROR]" in msg:
+        line_div.className += " text-red-600 bg-red-50"
+    elif "[WARN]" in msg:
+        line_div.className += " text-yellow-600 bg-yellow-50"
+    else:
+        # Check if it has the specific log format "YYYY-MM-DD HH:MM:SS,mmm - [INFO] | ..."
+        if " - [INFO] | " in msg:
+            parts = msg.split(" - [INFO] | ", 1)
+            timestamp = f"<span class='text-gray-500'>{parts[0]}</span>"
+            content = f"<span>{parts[1]}</span>"
+            line_div.innerHTML = f"{timestamp} - <span class='text-blue-600 font-semibold'>[INFO]</span> | {content}"
+        else:
+            line_div.innerText = msg
+
+    if line_div.innerHTML == "":
+        line_div.innerText = msg
+
+    log_el.appendChild(line_div)
+    log_el.scrollTop = log_el.scrollHeight
+
+def clear_logs(event):
+    log_el = document.getElementById("status-logs")
+    log_el.innerHTML = ""
+
+async def read_file_content(file_obj, as_text=True):
+    if not file_obj:
+        return None
+    # Pyodide / JS file reading
+    array_buffer = await file_obj.arrayBuffer()
+    bytes_arr = Uint8Array.new(array_buffer).to_py()
+    if as_text:
+        return bytes(bytes_arr).decode('latin-1')
+    return bytes(bytes_arr)
+
+def download_file(content, filename, mime_type="text/plain"):
+    blob = Blob.new([content], {type: mime_type})
+    url = URL.createObjectURL(blob)
+    a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+# ----- Global state -----
+original_parsed_data = None
+current_cii_filename = "original.cii"
+
+# --- Set up global logging interceptor ---
+import logging
+
+class PyScriptLogHandler(logging.Handler):
+    def emit(self, record):
+        msg = self.format(record)
+        log_status(msg)
+
+# Capture root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+pyscript_handler = PyScriptLogHandler()
+pyscript_handler.setFormatter(logging.Formatter('%(asctime)s - [%(levelname)s] | %(message)s'))
+root_logger.addHandler(pyscript_handler)
+
+
+import asyncio
+from js import document, Uint8Array, File, URL, Blob
+import io
+import export_cii
+
+async def on_export_csv_to_cii(event):
+    log_status("Starting Serverless CSV to CII Conversion...")
+    
+    file_input = document.getElementById("upload-csv")
+    if not file_input.files or file_input.files.length == 0:
+        log_status("Error: No .csv file selected.")
+        return
+        
+    file = file_input.files.item(0)
+    
+    # Check if the user accidentally uploaded an .accdb
+    if file.name.lower().endswith('.accdb'):
+        log_status("Error: .ACCDB (MS Access) binaries cannot be processed in the browser. Please use the Middle-Layer .CSV template, or run the local Python server for .ACCDB support.")
+        return
+        
+    array_buffer = await file.arrayBuffer()
+    file_bytes = array_buffer.to_bytes()
+    
+    # Save the CSV to Pyodide's virtual filesystem
+    with open("input.csv", "wb") as f:
+        f.write(file_bytes)
+        
+    try:
+        # Run the standalone exporter natively in the browser
+        exporter = export_cii.CaesarExporter("input.csv", mode="python")
+        exporter.export("output.cii")
+        
+        # Read the generated CII back from virtual FS
+        with open("output.cii", "rb") as f:
+            cii_data = f.read()
+            
+        # Trigger download via JS
+        js_array = Uint8Array.new(len(cii_data))
+        js_array.assign(cii_data)
+        blob = Blob.new([js_array], {type: "application/octet-stream"})
+        url = URL.createObjectURL(blob)
+        
+        link = document.createElement("a")
+        link.href = url
+        link.download = "final.cii"
+        link.click()
+        URL.revokeObjectURL(url)
+        
+        log_status(f"Success! Downloaded final.cii")
+    except Exception as e:
+        log_status(f"Failed to generate .CII: {str(e)}")
+
+# Bind the new button
+process_btn = document.getElementById("process-csv")
+if process_btn:
+    process_btn.addEventListener("click", pyodide.ffi.create_proxy(on_export_csv_to_cii))
+
+async def on_export_csv(event):
+    global original_parsed_data, current_cii_filename
+    log_status("Starting CSV Export...")
+
+    file_input = document.getElementById("upload-cii")
+    if not file_input.files or file_input.files.length == 0:
+        log_status("Error: No .cii file selected.")
+        return
+
+    file_obj = file_input.files.item(0)
+    current_cii_filename = file_obj.name
+
+    content = await read_file_content(file_obj)
+
+    # We must patch the parser to read from a string instead of a filepath
+    settings = ParserSettings(n1_base=2000, is_data_matrix=False)
+    p = CIIParser(settings)
+
+    # Overwrite parse method behavior for browser string
+    lines = content.split('\n')
+    # Remove \r if present
+    lines = [l.rstrip('\r') for l in lines]
+
+    from parser import ParseContext
+    ctx = ParseContext(lines)
+
+    log_status("Parsing .cii file...")
+    # Manual loop copied from parser.py since it expects a filepath
+    p._parse_data_matrix = p._parse_data_matrix # keep ref
+    while ctx.has_more():
+        line = ctx.peek()
+        if line.startswith("#$"):
+            section = line.strip().split()[1] if len(line.strip().split()) > 1 else ""
+            if section == "VERSION": p._parse_version(ctx)
+            elif section == "CONTROL": p._parse_control(ctx)
+            elif section == "ELEMENTS": p._parse_elements(ctx)
+            elif section == "AUX_DATA": p._parse_aux_data(ctx)
+            elif section == "MISCEL_1": p._parse_miscel_1(ctx)
+            elif section == "UNITS": p._parse_units(ctx)
+            elif section == "COORDS": p._parse_coords(ctx)
+            else: ctx.consume()
+        else:
+            ctx.consume()
+
+    original_parsed_data = p.parsed_data
+    log_status(f"Parsed {len(original_parsed_data.get('elements', []))} elements.")
+
+    # Export to CSV (we need to patch exporter to return string instead of saving to disk)
+    # Exporter uses pd.DataFrame.to_csv(output_path). We can change output_path to a string buffer or just let it return the df
+    df = generate_custom_csv(original_parsed_data, "temp.csv")
+    csv_string = df.to_csv(index=False)
+
+    out_name = current_cii_filename.replace('.cii', '.CII').replace('.CII', '_export.csv')
+    download_file(csv_string, out_name, "text/csv")
+    log_status(f"Downloaded: {out_name}")
+
+async def on_reconstruct(event):
+    global original_parsed_data, current_cii_filename
+    log_status("Starting Reconstruction...")
+
+    if original_parsed_data is None:
+        # Try to parse the original file if provided, but don't fail if missing
+        file_input = document.getElementById("upload-cii")
+        if file_input.files and file_input.files.length > 0:
+            file_obj = file_input.files.item(0)
+            current_cii_filename = file_obj.name
+            content = await read_file_content(file_obj)
+
+            settings = ParserSettings(n1_base=2000, is_data_matrix=False)
+            p = CIIParser(settings)
+            lines = [l.rstrip('\r') for l in content.split('\n')]
+            original_parsed_data = p.parse_lines(lines)
+            log_status("Original CII parsed successfully.")
+        else:
+            log_status("Warning: No Original .cii file provided. Performing a standalone reconstruction from CSV.")
+            current_cii_filename = "reconstructed.cii"
+
+    csv_input = document.getElementById("upload-csv")
+    if not csv_input.files or csv_input.files.length == 0:
+        log_status("Error: No CSV file selected.")
+        return
+
+    csv_file_obj = csv_input.files.item(0)
+    csv_content = await read_file_content(csv_file_obj)
+
+    import io
+    import pandas as pd
+    from importer import reconstruct_from_csv
+
+    df = pd.read_csv(io.StringIO(csv_content))
+
+    # Let the proper Python importer logic handle the merge
+    original_parsed_data = reconstruct_from_csv(df, original_parsed_data)
+
+    log_status(f"CSV applied. Serializing {len(original_parsed_data['elements'])} elements...")
+
+    # Ensure line endings match original if it exists
+    use_dos = False
+    if 'content' in locals() and "\r\n" in content:
+        use_dos = True
+    s_settings = SerializerSettings(use_dos_newlines=use_dos)
+    serializer = CIISerializer(s_settings)
+    gen_str = serializer.serialize(original_parsed_data)
+
+    out_name = "reconstructed_" + current_cii_filename
+    download_file(gen_str, out_name, "text/plain")
+    log_status(f"Downloaded: {out_name}")
+
+
+# Bind events
+btn_export = document.getElementById("btn-export-csv")
+btn_export.addEventListener("click", create_proxy(on_export_csv))
+
+btn_recon = document.getElementById("btn-reconstruct")
+btn_recon.addEventListener("click", create_proxy(on_reconstruct))
+
+btn_clear = document.getElementById("btn-clear-logs")
+btn_clear.addEventListener("click", create_proxy(clear_logs))
+
+document.getElementById("loading").classList.add("hidden")
+document.getElementById("app").classList.remove("hidden")
+log_status("System Ready.")
+
+    </script>
+</body>
+</html>

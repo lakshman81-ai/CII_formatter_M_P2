@@ -1,0 +1,159 @@
+import csv
+import pandas as pd
+from typing import List, Dict, Any, Tuple
+from logger import get_logger
+
+logger = get_logger("exporter")
+
+def extract_guid_for_restraint(rest_ptr: int, restraint_block: List[List[str]]) -> str:
+    """
+    Extracts the support GUID from the RESTRANT block.
+    RESTRANT data typically has 12 lines per restraint:
+    - 2 lines for Reals (repeated 6x for 6 dof)
+    - 2 lines for Strings (repeated 6x)
+    So we need to find the specific block for the pointer and extract the string.
+    """
+    if rest_ptr <= 0 or not restraint_block:
+        return ""
+
+    # 0-indexed pointer
+    idx = rest_ptr - 1
+    if idx < len(restraint_block):
+        record = restraint_block[idx]
+        # In CAESAR II, the support GUID is typically the 2nd string in the format: (7X, I5, 1X, A100)
+        # We look for lines that might be the strings.
+        # Often they are the last lines in the 12 line block.
+        # We can just search for a non-blank string line.
+        for line in record:
+            if len(line) > 13: # Longer than standard format probably
+                # Try parsing format (7X, I5, 1X, A100)
+                try:
+                    str_len = int(line[7:12].strip())
+                    if str_len > 0 and len(line) > 13:
+                        text = line[13:13+str_len].strip()
+                        if text:
+                            # A bit of a naive guess for GUID vs Tag, let's just return the first non-empty text found
+                            return text
+                except ValueError:
+                    pass
+    return ""
+
+def get_starting_coords(coords_block: List[Dict[str, float]]) -> Tuple[float, float, float]:
+    if coords_block and len(coords_block) > 0:
+        first = coords_block[0]
+        return first.get('x', 0.0), first.get('y', 0.0), first.get('z', 0.0)
+    return 0.0, 0.0, 0.0
+
+def generate_custom_csv(parsed_data: Dict[str, Any], output_path: str):
+    logger.info(f"[EXPORT] Initializing Custom Pipeline 41-Column CSV routing... Output: {output_path}")
+
+    columns = [
+        "#", "CSV SEQ NO", "Type", "TEXT", "PIPELINE-REFERENCE", "REF NO.", "BORE",
+        "EP1 COORDS", "EP2 COORDS", "CP COORDS", "BP COORDS", "SKEY", "SUPPORT COOR",
+        "SUPPORT GUID", "CA 1", "CA 2", "CA 3", "CA 4", "CA 5", "CA 6", "CA 7",
+        "CA 8", "CA 9", "CA 10", "CA 97", "CA 98", "Fixing Action", "LEN 1", "AXIS 1",
+        "LEN 2", "AXIS 2", "LEN 3", "AXIS 3", "BRLEN", "DELTA_X", "DELTA_Y", "DELTA_Z",
+        "DIAMETER", "WALL_THICK", "BEND_PTR", "RIGID_PTR", "INT_PTR"
+    ]
+
+    # Add robust fallback columns for data that isn't cleanly mapped
+    for i in range(98):
+        columns.append(f"REL_{i:02d}")
+    for i in range(18):
+        columns.append(f"IEL_{i:02d}")
+
+    parsed_elements = parsed_data.get("elements", [])
+    coords_block = parsed_data.get("coords", [])
+    aux_data = parsed_data.get("aux_data", {})
+    restraint_block = aux_data.get("RESTRANT", [])
+
+    rows = []
+    running_idx = 1
+    seq_idx = 1
+
+    current_x, current_y, current_z = get_starting_coords(coords_block)
+
+    for idx, el in enumerate(parsed_elements):
+        row = {col: "" for col in columns}
+
+        rel = el.get('REL', [])
+        iel = el.get('IEL', [])
+
+        if len(rel) < 8: continue
+
+        from_node = rel[0]
+        to_node = rel[1]
+        dx = rel[2]
+        dy = rel[3]
+        dz = rel[4]
+        diameter = rel[5]
+        wall_thk = rel[6]
+
+        bend_ptr = iel[0] if len(iel) > 0 else 0
+        rigid_ptr = iel[1] if len(iel) > 1 else 0
+        rest_ptr = iel[3] if len(iel) > 3 else 0
+        int_ptr = iel[10] if len(iel) > 10 else 0
+        flange_ptr = iel[13] if len(iel) > 13 else 0
+
+        ep1 = (current_x, current_y, current_z)
+        current_x += dx
+        current_y += dy
+        current_z += dz
+        ep2 = (current_x, current_y, current_z)
+        cp = ((ep1[0]+ep2[0])/2, (ep1[1]+ep2[1])/2, (ep1[2]+ep2[2])/2)
+
+        comp_type = "Pipe"
+        if bend_ptr > 0: comp_type = "Bend"
+        elif int_ptr > 0: comp_type = "Tee/Olet"
+        elif flange_ptr > 0: comp_type = "Flange"
+        elif rest_ptr > 0: comp_type = "Support"
+        elif rigid_ptr > 0: comp_type = "Rigid"
+
+        if dx != 0:
+            row["LEN 1"] = abs(dx)
+            row["AXIS 1"] = "East" if dx > 0 else "West"
+        if dy != 0:
+            row["LEN 2"] = abs(dy)
+            row["AXIS 2"] = "Up" if dy > 0 else "Down"
+        if dz != 0:
+            row["LEN 3"] = abs(dz)
+            row["AXIS 3"] = "North" if dz > 0 else "South"
+
+        row["#"] = running_idx
+        row["CSV SEQ NO"] = seq_idx
+        row["Type"] = comp_type
+        row["TEXT"] = f"{comp_type} {int(from_node)}-{int(to_node)}"
+        row["PIPELINE-REFERENCE"] = el.get('STR', ["", ""])[1] if len(el.get('STR', [])) > 1 else ""
+        row["BORE"] = diameter
+        row["DIAMETER"] = diameter
+        row["WALL_THICK"] = wall_thk
+        row["DELTA_X"] = dx
+        row["DELTA_Y"] = dy
+        row["DELTA_Z"] = dz
+        row["EP1 COORDS"] = f"({ep1[0]},{ep1[1]},{ep1[2]})"
+        row["EP2 COORDS"] = f"({ep2[0]},{ep2[1]},{ep2[2]})"
+        row["CP COORDS"] = f"({cp[0]},{cp[1]},{cp[2]})"
+
+        row["BEND_PTR"] = bend_ptr
+        row["RIGID_PTR"] = rigid_ptr
+        row["INT_PTR"] = int_ptr
+
+        if rest_ptr > 0:
+            row["SUPPORT GUID"] = extract_guid_for_restraint(rest_ptr, restraint_block)
+            row["SUPPORT COOR"] = row["EP2 COORDS"]
+
+        # Add generic array backups
+        for i, val in enumerate(rel):
+            row[f"REL_{i:02d}"] = val
+        for i, val in enumerate(iel):
+            row[f"IEL_{i:02d}"] = val
+
+        running_idx += 1
+        seq_idx += 1
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    df.to_csv(output_path, index=False)
+    logger.info(f"[EXPORT] CSV export completed successfully to {output_path}")
+    return df
