@@ -170,64 +170,6 @@ pyscript_handler = PyScriptLogHandler()
 pyscript_handler.setFormatter(logging.Formatter('%(asctime)s - [%(levelname)s] | %(message)s'))
 root_logger.addHandler(pyscript_handler)
 
-
-import asyncio
-from js import document, Uint8Array, File, URL, Blob
-import io
-import export_cii
-
-async def on_export_csv_to_cii(event):
-    log_status("Starting Serverless CSV to CII Conversion...")
-    
-    file_input = document.getElementById("upload-csv")
-    if not file_input.files or file_input.files.length == 0:
-        log_status("Error: No .csv file selected.")
-        return
-        
-    file = file_input.files.item(0)
-    
-    # Check if the user accidentally uploaded an .accdb
-    if file.name.lower().endswith('.accdb'):
-        log_status("Error: .ACCDB (MS Access) binaries cannot be processed in the browser. Please use the Middle-Layer .CSV template, or run the local Python server for .ACCDB support.")
-        return
-        
-    array_buffer = await file.arrayBuffer()
-    file_bytes = array_buffer.to_bytes()
-    
-    # Save the CSV to Pyodide's virtual filesystem
-    with open("input.csv", "wb") as f:
-        f.write(file_bytes)
-        
-    try:
-        # Run the standalone exporter natively in the browser
-        exporter = export_cii.CaesarExporter("input.csv", mode="python")
-        exporter.export("output.cii")
-        
-        # Read the generated CII back from virtual FS
-        with open("output.cii", "rb") as f:
-            cii_data = f.read()
-            
-        # Trigger download via JS
-        js_array = Uint8Array.new(len(cii_data))
-        js_array.assign(cii_data)
-        blob = Blob.new([js_array], {type: "application/octet-stream"})
-        url = URL.createObjectURL(blob)
-        
-        link = document.createElement("a")
-        link.href = url
-        link.download = "final.cii"
-        link.click()
-        URL.revokeObjectURL(url)
-        
-        log_status(f"Success! Downloaded final.cii")
-    except Exception as e:
-        log_status(f"Failed to generate .CII: {str(e)}")
-
-# Bind the new button
-process_btn = document.getElementById("process-csv")
-if process_btn:
-    process_btn.addEventListener("click", pyodide.ffi.create_proxy(on_export_csv_to_cii))
-
 async def on_export_csv(event):
     global original_parsed_data, current_cii_filename
     log_status("Starting CSV Export...")
@@ -299,7 +241,23 @@ async def on_reconstruct(event):
             settings = ParserSettings(n1_base=2000, is_data_matrix=False)
             p = CIIParser(settings)
             lines = [l.rstrip('\r') for l in content.split('\n')]
-            original_parsed_data = p.parse_lines(lines)
+            from parser import ParseContext
+            ctx = ParseContext(lines)
+            while ctx.has_more():
+                line = ctx.peek()
+                if line.startswith("#$"):
+                    section = line.strip().split()[1] if len(line.strip().split()) > 1 else ""
+                    if section == "VERSION": p._parse_version(ctx)
+                    elif section == "CONTROL": p._parse_control(ctx)
+                    elif section == "ELEMENTS": p._parse_elements(ctx)
+                    elif section == "AUX_DATA": p._parse_aux_data(ctx)
+                    elif section == "MISCEL_1": p._parse_miscel_1(ctx)
+                    elif section == "UNITS": p._parse_units(ctx)
+                    elif section == "COORDS": p._parse_coords(ctx)
+                    else: ctx.consume()
+                else:
+                    ctx.consume()
+            original_parsed_data = p.parsed_data
             log_status("Original CII parsed successfully.")
         else:
             log_status("Warning: No Original .cii file provided. Performing a standalone reconstruction from CSV.")

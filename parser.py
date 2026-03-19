@@ -110,9 +110,6 @@ class CIIParser:
         with open(filepath, 'r', encoding='latin-1') as f:
             lines = [line.rstrip('\r\n') for line in f]
 
-        return self.parse_lines(lines)
-
-    def parse_lines(self, lines: list):
         ctx = ParseContext(lines)
 
         if self.settings.is_data_matrix:
@@ -146,7 +143,6 @@ class CIIParser:
                 ctx.consume()
 
         return self.parsed_data
-
 
     def _parse_version(self, ctx: ParseContext):
         header = ctx.consume() # consume #$ VERSION
