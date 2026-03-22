@@ -142,6 +142,15 @@ def reconstruct_from_csv(csv_path: str, base_parsed_data: Dict[str, Any]) -> Dic
                 pass
 
         # Parse CSV values
+        # First try direct FROM_NODE/TO_NODE columns (ACCDB format)
+        from_node_direct = row.get("FROM_NODE")
+        to_node_direct = row.get("TO_NODE")
+        if from_node_direct is not None and not pd.isna(from_node_direct):
+            update_rel(0, float(from_node_direct))
+        if to_node_direct is not None and not pd.isna(to_node_direct):
+            update_rel(1, float(to_node_direct))
+
+        # Fallback: parse FROM/TO from TEXT column (CSV format: "Pipe 10-20")
         text = str(row.get("TEXT", ""))
         nodes = text.split(" ")[-1].split("-") if " " in text and "-" in text else ["0", "0"]
         try:
@@ -157,12 +166,37 @@ def reconstruct_from_csv(csv_path: str, base_parsed_data: Dict[str, Any]) -> Dic
         update_rel(5, row.get("DIAMETER"))
         update_rel(6, row.get("WALL_THICK"))
 
+        # PIPELINE-REFERENCE: check standard CSV column then ACCDB alternatives
         if "PIPELINE-REFERENCE" in row and not pd.isna(row["PIPELINE-REFERENCE"]):
             update_str(1, row["PIPELINE-REFERENCE"])
+        else:
+            for accdb_ref_col in ["ELEMENT_NAME", "LINE_NO", "FROM_NODE_NAME"]:
+                val = row.get(accdb_ref_col)
+                if val is not None and not pd.isna(val) and str(val).strip():
+                    update_str(1, str(val))
+                    break
 
+        # Standard CSV pointer columns
         for ptr_name, idx_iel in [("BEND_PTR", 0), ("RIGID_PTR", 1), ("INT_PTR", 10)]:
             val = row.get(ptr_name)
             update_iel(idx_iel, val)
+
+        # ACCDB-specific pointer columns (MANDATORY_FIELDS mapping from config)
+        accdb_ptr_map = [
+            ("EXPJ_PTR",     2),   # EXPJT
+            ("REST_PTR",     3),   # RESTRANT
+            ("DISP_PTR",     4),   # DISPLMNT
+            ("FORCMNT_PTR",  5),   # FORCMNT
+            ("ULOAD_PTR",    6),   # UNIFORM
+            ("WLOAD_PTR",    7),   # WIND
+            ("ALLOW_PTR",    9),   # ALLOWBLS
+            ("FLANGE_PTR",  13),   # FLANGES
+            ("REDUCER_PTR", 14),   # REDUCERS
+        ]
+        for accdb_col, iel_idx in accdb_ptr_map:
+            val = row.get(accdb_col)
+            if val is not None and not pd.isna(val):
+                update_iel(iel_idx, val)
 
         comp_type = str(row.get("Type", ""))
         if comp_type == "Support":

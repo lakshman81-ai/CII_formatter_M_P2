@@ -37,7 +37,7 @@
             </div>
 
             <!-- Reconstructing Section -->
-            <div class="border border-gray-300 rounded p-4 bg-gray-50">
+            <div class="border border-gray-300 rounded p-4 mb-6 bg-gray-50">
                 <h2 class="text-xl font-semibold mb-4 border-b pb-2">2. Reconstruct .CII from CSV</h2>
                 <p class="text-sm text-gray-600 mb-4">Requires both the original .CII (for headers/metadata) and the modified CSV.</p>
                 <div class="flex flex-col gap-4">
@@ -48,6 +48,33 @@
                     <div>
                         <button id="btn-reconstruct" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
                             Reconstruct & Download .CII
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ACCDB Import Section -->
+            <div class="border border-gray-300 rounded p-4 mb-6 bg-gray-50">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2">3. Import from MS Access (.accdb) CSV Export</h2>
+                <p class="text-sm text-gray-600 mb-2">
+                    MS Access .accdb files cannot be read directly in the browser. Use the CLI to export
+                    <code class="bg-gray-200 px-1 rounded">INPUT_BASIC_ELEMENT_DATA</code> to CSV first:
+                </p>
+                <pre class="bg-gray-800 text-green-300 text-xs p-3 rounded mb-4 overflow-x-auto">python cli.py --input your_file.accdb --out exported.csv</pre>
+                <p class="text-sm text-gray-600 mb-4">
+                    Then upload the exported CSV below. ACCDB column names
+                    (<code class="bg-gray-200 px-1 rounded">FROM_NODE</code>,
+                    <code class="bg-gray-200 px-1 rounded">TO_NODE</code>,
+                    <code class="bg-gray-200 px-1 rounded">REST_PTR</code>, etc.) are automatically mapped.
+                </p>
+                <div class="flex flex-col gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Select ACCDB-Exported CSV</label>
+                        <input type="file" id="upload-accdb-csv" accept=".csv" class="block w-full border border-gray-300 p-2 rounded">
+                    </div>
+                    <div>
+                        <button id="btn-accdb-import" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 disabled:opacity-50">
+                            Import ACCDB CSV &amp; Download .CII
                         </button>
                     </div>
                 </div>
@@ -141,7 +168,7 @@ async def read_file_content(file_obj, as_text=True):
     return bytes(bytes_arr)
 
 def download_file(content, filename, mime_type="text/plain"):
-    blob = Blob.new([content], {type: mime_type})
+    blob = Blob.new([content], {"type": mime_type})
     url = URL.createObjectURL(blob)
     a = document.createElement("a")
     a.href = url
@@ -295,12 +322,51 @@ async def on_reconstruct(event):
     log_status(f"Downloaded: {out_name}")
 
 
+async def on_accdb_import(event):
+    global original_parsed_data, current_cii_filename
+    log_status("Starting ACCDB CSV Import...")
+
+    csv_input = document.getElementById("upload-accdb-csv")
+    if not csv_input.files or csv_input.files.length == 0:
+        log_status("[ERROR] No ACCDB-exported CSV file selected.")
+        return
+
+    csv_file_obj = csv_input.files.item(0)
+    csv_content = await read_file_content(csv_file_obj)
+
+    import io
+    import pandas as pd
+    from importer import reconstruct_from_csv
+
+    df = pd.read_csv(io.StringIO(csv_content))
+    log_status(f"Read {len(df)} rows from ACCDB CSV ({list(df.columns[:6])}...)")
+
+    # Reconstruct standalone (no original .CII needed for ACCDB imports)
+    # If user also has an original .CII loaded, use it as base
+    base_data = original_parsed_data  # may be None → standalone
+    new_parsed = reconstruct_from_csv(df, base_data)
+
+    log_status(f"Reconstructed {len(new_parsed['elements'])} elements. Serializing...")
+
+    s_settings = SerializerSettings(use_dos_newlines=False)
+    serializer = CIISerializer(s_settings)
+    gen_str = serializer.serialize(new_parsed)
+
+    original_parsed_data = new_parsed
+    current_cii_filename = csv_file_obj.name.replace(".csv", "") + "_from_accdb.cii"
+    download_file(gen_str, current_cii_filename, "text/plain")
+    log_status(f"Downloaded: {current_cii_filename}")
+
+
 # Bind events
 btn_export = document.getElementById("btn-export-csv")
 btn_export.addEventListener("click", create_proxy(on_export_csv))
 
 btn_recon = document.getElementById("btn-reconstruct")
 btn_recon.addEventListener("click", create_proxy(on_reconstruct))
+
+btn_accdb = document.getElementById("btn-accdb-import")
+btn_accdb.addEventListener("click", create_proxy(on_accdb_import))
 
 btn_clear = document.getElementById("btn-clear-logs")
 btn_clear.addEventListener("click", create_proxy(clear_logs))
