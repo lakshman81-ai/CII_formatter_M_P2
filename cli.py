@@ -1,6 +1,9 @@
 import argparse
 import sys
 import os
+import tkinter as tk
+from tkinter import filedialog
+from analyze_defaults import get_table_data
 from parser import CIIParser, ParserSettings
 from serializer import CIISerializer, SerializerSettings
 from exporter import generate_custom_csv
@@ -38,6 +41,7 @@ def display_menu(settings: ParserSettings, input_file: str, output_file: str):
     print("")
     print("  [ ACTIONS ]")
     print("  (L) Load & Parse File      (P) Generate Preview      (E) Export/Save Data")
+    print("  (A) Import MS Access (.accdb) via Dialog")
     print(f"  (S) Serialize & Compare    (Q) Quit                  ver.{DATE_STR} time {TIME_STR}")
     print("=" * 80)
     print("  DEBUG & CONSOLE LOGGING")
@@ -112,6 +116,23 @@ def main():
                 input_file = input("Enter input file path: ").strip()
             p = CIIParser(settings)
             parsed_data = p.parse(input_file)
+            input("Press Enter to continue...")
+        elif choice == 'a':
+            root = tk.Tk()
+            root.withdraw()
+            accdb_path = filedialog.askopenfilename(filetypes=[("MS Access Files", "*.accdb"), ("All Files", "*.*")])
+            if accdb_path:
+                print(f"Extracting INPUT_BASIC_ELEMENT_DATA from {accdb_path}...")
+                df = get_table_data(accdb_path, "INPUT_BASIC_ELEMENT_DATA")
+                if df is not None:
+                    from importer import reconstruct_from_csv
+                    parsed_data = reconstruct_from_csv(df, None)
+                    input_file = accdb_path
+                    print("Data extracted and parsed successfully.")
+                else:
+                    print("Failed to extract data or table not found.")
+            else:
+                print("No file selected.")
             input("Press Enter to continue...")
         elif choice == 'p':
             if parsed_data:
