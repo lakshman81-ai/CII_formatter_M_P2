@@ -37,7 +37,7 @@
             </div>
 
             <!-- Reconstructing Section -->
-            <div class="border border-gray-300 rounded p-4 bg-gray-50">
+            <div class="border border-gray-300 rounded p-4 mb-6 bg-gray-50">
                 <h2 class="text-xl font-semibold mb-4 border-b pb-2">2. Reconstruct .CII from CSV</h2>
                 <p class="text-sm text-gray-600 mb-4">Requires both the original .CII (for headers/metadata) and the modified CSV.</p>
                 <div class="flex flex-col gap-4">
@@ -48,6 +48,23 @@
                     <div>
                         <button id="btn-reconstruct" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
                             Reconstruct & Download .CII
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Access DB Import Section -->
+            <div class="border border-gray-300 rounded p-4 bg-gray-50">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2">3. Import MS Access (.accdb)</h2>
+                <p class="text-sm text-gray-600 mb-4">Upload an Access DB to extract the basic element data into CSV format (Requires local Flask backend).</p>
+                <div class="flex flex-col gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Select Access File (.accdb or .mdb)</label>
+                        <input type="file" id="upload-accdb" accept=".accdb,.mdb" class="block w-full border border-gray-300 p-2 rounded">
+                    </div>
+                    <div>
+                        <button id="btn-import-accdb" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 disabled:opacity-50">
+                            Extract Access Data to CSV
                         </button>
                     </div>
                 </div>
@@ -294,6 +311,36 @@ async def on_reconstruct(event):
     download_file(gen_str, out_name, "text/plain")
     log_status(f"Downloaded: {out_name}")
 
+async def on_import_accdb(event):
+    log_status("Starting Access DB Import...")
+    file_input = document.getElementById("upload-accdb")
+    if not file_input.files or file_input.files.length == 0:
+        log_status("Error: No .accdb or .mdb file selected.")
+        return
+
+    file_obj = file_input.files.item(0)
+
+    # We must use FormData to send the file via js.fetch
+    from js import FormData, fetch
+    form_data = FormData.new()
+    form_data.append("file", file_obj)
+
+    try:
+        log_status("Uploading to local backend for extraction...")
+        response = await fetch("/api/convert-accdb", method="POST", body=form_data)
+
+        if not response.ok:
+            error_text = await response.text()
+            log_status(f"[ERROR] Backend failed to convert. Are you running the local Flask server (app.py)? Details: {error_text}")
+            return
+
+        csv_text = await response.text()
+        out_name = file_obj.name + "_extracted.csv"
+        download_file(csv_text, out_name, "text/csv")
+        log_status(f"Extracted and Downloaded: {out_name}")
+    except Exception as e:
+        log_status(f"[ERROR] Connection failed. You must run the local Flask server (app.py) to parse MS Access files. Details: {str(e)}")
+
 
 # Bind events
 btn_export = document.getElementById("btn-export-csv")
@@ -301,6 +348,9 @@ btn_export.addEventListener("click", create_proxy(on_export_csv))
 
 btn_recon = document.getElementById("btn-reconstruct")
 btn_recon.addEventListener("click", create_proxy(on_reconstruct))
+
+btn_import_accdb = document.getElementById("btn-import-accdb")
+btn_import_accdb.addEventListener("click", create_proxy(on_import_accdb))
 
 btn_clear = document.getElementById("btn-clear-logs")
 btn_clear.addEventListener("click", create_proxy(clear_logs))
