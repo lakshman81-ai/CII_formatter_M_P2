@@ -6,6 +6,8 @@
     <title>CAESAR II Neutral File Tools</title>
     <!-- TailWind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- mdb-reader library (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/mdb-reader@3.1.0/dist/mdb-reader.bundle.min.js"></script>
     <!-- PyScript -->
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
@@ -55,26 +57,21 @@
 
             <!-- ACCDB Import Section -->
             <div class="border border-gray-300 rounded p-4 mb-6 bg-gray-50">
-                <h2 class="text-xl font-semibold mb-4 border-b pb-2">3. Import from MS Access (.accdb) CSV Export</h2>
-                <p class="text-sm text-gray-600 mb-2">
-                    MS Access .accdb files cannot be read directly in the browser. Use the CLI to export
-                    <code class="bg-gray-200 px-1 rounded">INPUT_BASIC_ELEMENT_DATA</code> to CSV first:
-                </p>
-                <pre class="bg-gray-800 text-green-300 text-xs p-3 rounded mb-4 overflow-x-auto">python cli.py --input your_file.accdb --out exported.csv</pre>
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2">3. Import from MS Access (.accdb) or CSV</h2>
                 <p class="text-sm text-gray-600 mb-4">
-                    Then upload the exported CSV below. ACCDB column names
+                    Provide a MS Access database (.accdb/.mdb) or CSV file. All processing happens in your browser - no server required. ACCDB column names
                     (<code class="bg-gray-200 px-1 rounded">FROM_NODE</code>,
                     <code class="bg-gray-200 px-1 rounded">TO_NODE</code>,
                     <code class="bg-gray-200 px-1 rounded">REST_PTR</code>, etc.) are automatically mapped.
                 </p>
                 <div class="flex flex-col gap-4">
                     <div>
-                        <label class="block text-sm font-medium mb-1">Select ACCDB-Exported CSV</label>
-                        <input type="file" id="upload-accdb-csv" accept=".csv" class="block w-full border border-gray-300 p-2 rounded">
+                        <label class="block text-sm font-medium mb-1">Select File (.accdb, .mdb, .csv)</label>
+                        <input type="file" id="upload-accdb-csv" accept=".csv,.accdb,.mdb" class="block w-full border border-gray-300 p-2 rounded">
                     </div>
                     <div>
                         <button id="btn-accdb-import" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 disabled:opacity-50">
-                            Import ACCDB CSV &amp; Download .CII
+                            Import ACCDB/CSV &amp; Download .CII
                         </button>
                     </div>
                 </div>
@@ -114,6 +111,86 @@
     </py-config>
 
     <!-- PyScript Logic -->
+    <script>
+    // Initialize mdb-reader functions
+    function parseAccessFile(buffer) {
+        try {
+            const { Database } = window.mdbReader;
+            const db = new Database(buffer);
+
+            // VALIDATION 1: Confirm it's an Access database
+            const tables = db.getTableNames();
+            if (!tables || tables.length === 0) {
+                throw new Error("No tables found in database");
+            }
+
+            // Identify target table
+            let targetTableName = "INPUT_BASIC_ELEMENT_DATA";
+            if (!tables.includes(targetTableName)) {
+                if (tables.length > 0) {
+                    targetTableName = tables[0];
+                } else {
+                    throw new Error("Cannot find target table");
+                }
+            }
+
+            // VALIDATION 2: Check table data is accessible
+            const targetTable = db.getTable(targetTableName);
+            if (!targetTable) {
+                throw new Error("Cannot read target table");
+            }
+
+            return {
+                tables: tables,
+                primaryTable: targetTableName,
+                rowCount: targetTable.getRowCount()
+            };
+        } catch (e) {
+            throw new Error(`Access file parsing failed: ${e.message}`);
+        }
+    }
+
+    function extractAccessTableToCSV(buffer, tableName) {
+        try {
+            const { Database } = window.mdbReader;
+            const db = new Database(buffer);
+            const table = db.getTable(tableName);
+
+            // VALIDATION 3: Verify table structure
+            const data = table.getData();
+            if (!data || data.length === 0) {
+                throw new Error(`Table "${tableName}" is empty`);
+            }
+
+            // Extract headers
+            const headers = Object.keys(data[0]);
+
+            // VALIDATION 4: Check for valid headers
+            if (headers.length === 0) {
+                throw new Error("Table has no columns");
+            }
+
+            // Build CSV
+            let csv = headers.join(',') + '\n';
+            data.forEach(row => {
+                const values = headers.map(h => {
+                    let v = row[h];
+                    // Handle special characters and quotes
+                    if (v === null || v === undefined) return '';
+                    if (typeof v === 'string' && (v.includes(',') || v.includes('"'))) {
+                        return `"${v.replace(/"/g, '""')}"`;
+                    }
+                    return v;
+                });
+                csv += values.join(',') + '\n';
+            });
+
+            return csv;
+        } catch (e) {
+            throw new Error(`CSV extraction failed: ${e.message}`);
+        }
+    }
+    </script>
     <script type="py">
 import asyncio
 from js import document, Blob, window, Uint8Array, URL
@@ -324,14 +401,28 @@ async def on_reconstruct(event):
 
 async def on_accdb_import(event):
     global original_parsed_data, current_cii_filename
-    log_status("Starting ACCDB CSV Import...")
+    log_status("Starting File Processing...")
 
-    csv_input = document.getElementById("upload-accdb-csv")
-    if not csv_input.files or csv_input.files.length == 0:
-        log_status("[ERROR] No ACCDB-exported CSV file selected.")
+    file_input = document.getElementById("upload-accdb-csv")
+    if not file_input.files or file_input.files.length == 0:
+        log_status("[ERROR] No file selected.")
         return
 
-    csv_file_obj = csv_input.files.item(0)
+    file_obj = file_input.files.item(0)
+    filename_lower = file_obj.name.lower()
+
+    if filename_lower.endswith('.accdb') or filename_lower.endswith('.mdb'):
+        await process_access_file_browser(file_obj)
+    elif filename_lower.endswith('.csv'):
+        await process_csv_file_browser(file_obj)
+    else:
+        log_status("❌ Error: Unsupported file format. Use .accdb, .mdb, or .csv")
+
+
+async def process_csv_file_browser(csv_file_obj):
+    global original_parsed_data, current_cii_filename
+    log_status("Starting CSV Import...")
+
     csv_content = await read_file_content(csv_file_obj)
 
     import io
@@ -339,7 +430,7 @@ async def on_accdb_import(event):
     from importer import reconstruct_from_csv
 
     df = pd.read_csv(io.StringIO(csv_content))
-    log_status(f"Read {len(df)} rows from ACCDB CSV ({list(df.columns[:6])}...)")
+    log_status(f"Read {len(df)} rows from CSV ({list(df.columns[:6])}...)")
 
     # Reconstruct standalone (no original .CII needed for ACCDB imports)
     # If user also has an original .CII loaded, use it as base
@@ -353,9 +444,79 @@ async def on_accdb_import(event):
     gen_str = serializer.serialize(new_parsed)
 
     original_parsed_data = new_parsed
-    current_cii_filename = csv_file_obj.name.replace(".csv", "") + "_from_accdb.cii"
+    current_cii_filename = csv_file_obj.name.replace(".csv", "") + "_from_csv.cii"
     download_file(gen_str, current_cii_filename, "text/plain")
     log_status(f"Downloaded: {current_cii_filename}")
+
+
+async def process_access_file_browser(file):
+    global original_parsed_data, current_cii_filename
+    from js import window
+
+    log_status(f"📂 Processing MS Access file: {file.name}")
+
+    try:
+        # STEP 1: Read file into buffer
+        log_status("⏳ Reading file into memory...")
+        array_buffer = await file.arrayBuffer()
+
+        # STEP 2: Parse with mdb-reader (JavaScript function)
+        log_status("⏳ Parsing Access database structure...")
+        parse_result = window.parseAccessFile(array_buffer)
+
+        # VALIDATION: Check parsing succeeded
+        if not parse_result:
+            raise Exception("Failed to parse Access file")
+
+        # Convert Proxy to dict-like structure to access its properties safely
+        tables = parse_result.tables
+        table_count = len(tables)
+        row_count = parse_result.rowCount
+        primary_table = parse_result.primaryTable
+
+        log_status(f"✅ Found {table_count} table(s), {row_count} row(s) in '{primary_table}'")
+
+        # STEP 3: Extract to CSV
+        log_status(f"⏳ Converting '{primary_table}' to CSV...")
+        csv_string = window.extractAccessTableToCSV(array_buffer, primary_table)
+
+        # VALIDATION: Check CSV was generated
+        if not csv_string or len(csv_string) < 10:  # Minimum valid CSV
+            raise Exception("CSV extraction resulted in empty or invalid data")
+
+        # Count rows in CSV for verification
+        csv_lines = csv_string.strip().split('\n')
+        csv_row_count = len(csv_lines) - 1  # Minus header
+        log_status(f"✅ CSV generated: {len(csv_lines)} lines, {csv_row_count} data rows")
+
+        # STEP 4: Process CSV via existing PyScript logic
+        import io
+        import pandas as pd
+        from importer import reconstruct_from_csv
+        from serializer import CIISerializer, SerializerSettings
+
+        df = pd.read_csv(io.StringIO(csv_string))
+        log_status(f"Read {len(df)} rows from generated CSV ({list(df.columns[:6])}...)")
+
+        # Reconstruct standalone
+        base_data = original_parsed_data
+        new_parsed = reconstruct_from_csv(df, base_data)
+
+        log_status(f"Reconstructed {len(new_parsed['elements'])} elements. Serializing...")
+
+        s_settings = SerializerSettings(use_dos_newlines=False)
+        serializer = CIISerializer(s_settings)
+        gen_str = serializer.serialize(new_parsed)
+
+        original_parsed_data = new_parsed
+        current_cii_filename = file.name.replace(".accdb", "").replace(".mdb", "") + "_from_accdb.cii"
+        download_file(gen_str, current_cii_filename, "text/plain")
+
+        log_status(f"✅ SUCCESS! Downloaded {current_cii_filename} ({len(gen_str)} bytes)")
+
+    except Exception as e:
+        log_status(f"❌ FAILED: {str(e)}")
+        log_status(f"ℹ️ Troubleshooting: Ensure file is a valid .accdb or .mdb Access database")
 
 
 # Bind events
