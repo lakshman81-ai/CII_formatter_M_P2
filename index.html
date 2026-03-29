@@ -149,7 +149,7 @@
             return {
                 tables: tables,
                 primaryTable: targetTableName,
-                rowCount: targetTable.getRowCount()
+                rowCount: targetTable.rowCount
             };
         } catch (e) {
             throw new Error(`Access file parsing failed: ${e.message}`);
@@ -516,7 +516,7 @@ async def process_access_file_browser(file):
         gen_str = serializer.serialize(new_parsed)
 
         original_parsed_data = new_parsed
-        current_cii_filename = file.name.replace(".accdb", "").replace(".mdb", "") + "_from_accdb.cii"
+        current_cii_filename = file.name.rsplit('.', 1)[0] + "_from_accdb.cii"
         download_file(gen_str, current_cii_filename, "text/plain")
 
         log_status(f"✅ SUCCESS! Downloaded {current_cii_filename} ({len(gen_str)} bytes)")
