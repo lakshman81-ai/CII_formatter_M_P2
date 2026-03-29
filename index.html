@@ -7,7 +7,12 @@
     <!-- TailWind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- mdb-reader library (CDN) -->
-    <script src="https://cdn.jsdelivr.net/npm/mdb-reader@3.1.0/dist/mdb-reader.bundle.min.js"></script>
+    <script type="module">
+        import { Buffer } from 'https://esm.sh/buffer';
+        import MDBReader from 'https://esm.sh/mdb-reader@3.1.0';
+        window.Buffer = Buffer;
+        window.mdbReader = { Database: MDBReader };
+    </script>
     <!-- PyScript -->
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
@@ -116,7 +121,8 @@
     function parseAccessFile(buffer) {
         try {
             const { Database } = window.mdbReader;
-            const db = new Database(buffer);
+            const nodeBuffer = window.Buffer.from(buffer);
+            const db = new Database(nodeBuffer);
 
             // VALIDATION 1: Confirm it's an Access database
             const tables = db.getTableNames();
@@ -153,7 +159,8 @@
     function extractAccessTableToCSV(buffer, tableName) {
         try {
             const { Database } = window.mdbReader;
-            const db = new Database(buffer);
+            const nodeBuffer = window.Buffer.from(buffer);
+            const db = new Database(nodeBuffer);
             const table = db.getTable(tableName);
 
             // VALIDATION 3: Verify table structure
@@ -177,7 +184,7 @@
                     let v = row[h];
                     // Handle special characters and quotes
                     if (v === null || v === undefined) return '';
-                    if (typeof v === 'string' && (v.includes(',') || v.includes('"'))) {
+                    if (typeof v === 'string' && (v.includes(',') || v.includes('"') || v.includes('\n') || v.includes('\r'))) {
                         return `"${v.replace(/"/g, '""')}"`;
                     }
                     return v;
